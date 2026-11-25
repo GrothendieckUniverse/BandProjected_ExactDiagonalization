@@ -1,0 +1,33 @@
+[project]
+name = "bandprojected-exactdiagonalization"
+version = "0.1.0"
+description = "Pure-NumPy momentum-space exact diagonalization for projected multi-band fermionic systems"
+readme = "README.md"
+authors = [
+    { name = "xiaodong-hu", email = "hxd.phys@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.5",
+    "scipy>=1.18.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "nbformat>=5.9",
+    "nbclient>=0.9",
+    "ipykernel>=6.25",
+]
+
+[project.scripts]
+bandprojected-exactdiagonalization = "bandprojected_exactdiagonalization:main"
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+pythonpath = ["src"]
+
+[build-system]
+requires = ["uv_build>=0.13.9,<0.14.0"]
+build-backend = "uv_build"
