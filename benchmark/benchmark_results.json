@@ -1,0 +1,141 @@
+{
+  "size_scaling": [
+    {
+      "label": "tMoTe2 3x5\n(D=200)",
+      "matrix": {
+        "mode": "matrix",
+        "dimension": 201,
+        "build_seconds": 0.053974193055182695,
+        "solve_seconds": 0.0666033299639821,
+        "peak_memory_mb": 0.4957847595214844,
+        "ground_energy": 280.658395838844
+      },
+      "matrixfree": {
+        "mode": "matrixfree",
+        "dimension": 201,
+        "build_seconds": 0.008817221038043499,
+        "solve_seconds": 0.4520191210322082,
+        "peak_memory_mb": 0.35913944244384766,
+        "ground_energy": 280.65839583884383
+      }
+    },
+    {
+      "label": "tMoTe2 3x6\n(D=1,031)",
+      "matrix": {
+        "mode": "matrix",
+        "dimension": 1032,
+        "build_seconds": 0.10485383309423923,
+        "solve_seconds": 0.14929486089386046,
+        "peak_memory_mb": 4.144321441650391,
+        "ground_energy": 345.66769567014865
+      },
+      "matrixfree": {
+        "mode": "matrixfree",
+        "dimension": 1032,
+        "build_seconds": 0.01838040817528963,
+        "solve_seconds": 0.9210226531140506,
+        "peak_memory_mb": 2.252272605895996,
+        "ground_energy": 345.6676956701486
+      }
+    },
+    {
+      "label": "tMoTe2 4x6\n(D=30,667)",
+      "matrix": {
+        "mode": "matrix",
+        "dimension": 30709,
+        "build_seconds": 0.7877339501865208,
+        "solve_seconds": 5.0497731999494135,
+        "peak_memory_mb": 299.7410821914673,
+        "ground_energy": 464.6763278507089
+      },
+      "matrixfree": {
+        "mode": "matrixfree",
+        "dimension": 30709,
+        "build_seconds": 0.08434008597396314,
+        "solve_seconds": 8.900994803057984,
+        "peak_memory_mb": 73.32131099700928,
+        "ground_energy": 464.6763278507087
+      }
+    },
+    {
+      "label": "p4mm 3x4\n(D=61,333)",
+      "matrix": {
+        "mode": "matrix",
+        "dimension": 61333,
+        "build_seconds": 2.419318095082417,
+        "solve_seconds": 13.671486610081047,
+        "peak_memory_mb": 1220.393455505371,
+        "ground_energy": 22.006346014584338
+      },
+      "matrixfree": {
+        "mode": "matrixfree",
+        "dimension": 61333,
+        "build_seconds": 0.08202930795960128,
+        "solve_seconds": 10.551883877022192,
+        "peak_memory_mb": 255.7127342224121,
+        "ground_energy": 22.00634601458427
+      }
+    }
+  ],
+  "thread_scaling": [
+    {
+      "threads": 1,
+      "matvec_seconds": 0.21945909662172197,
+      "dimension": 61333
+    },
+    {
+      "threads": 2,
+      "matvec_seconds": 0.12531250738538802,
+      "dimension": 61333
+    },
+    {
+      "threads": 4,
+      "matvec_seconds": 0.066896359808743,
+      "dimension": 61333
+    },
+    {
+      "threads": 8,
+      "matvec_seconds": 0.04603798319585621,
+      "dimension": 61333
+    },
+    {
+      "threads": 12,
+      "matvec_seconds": 0.035135971615090966,
+      "dimension": 61333
+    }
+  ],
+  "sector_worker_scaling": [
+    {
+      "sector_workers": 1,
+      "n_sectors": 8,
+      "seconds": 23.25490405317396
+    },
+    {
+      "sector_workers": 2,
+      "n_sectors": 8,
+      "seconds": 15.45863505685702
+    },
+    {
+      "sector_workers": 4,
+      "n_sectors": 8,
+      "seconds": 8.85870929993689
+    },
+    {
+      "sector_workers": 8,
+      "n_sectors": 8,
+      "seconds": 7.424468453042209
+    }
+  ],
+  "spectra_gaps": {
+    "tmote2_eps18": 0.01040761721611716,
+    "ctdbg_beta0p1": 3.4806137768894416,
+    "ctdbg_beta1p0": 1.5988279967581036,
+    "ictbg": 3.03081835426795,
+    "p4mm_0": 0.0796158622825267,
+    "p4mm_1": 0.06410648419482357
+  },
+  "ctdbg_pumps": {
+    "beta0p1_chern": 1,
+    "beta1p0_chern": 2
+  }
+}
