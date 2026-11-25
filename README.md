@@ -12,7 +12,7 @@ A clean, general, high-performance **pure-NumPy / SciPy** exact diagonalization 
 - **High-Speed Pure-NumPy ED Solvers (`basis.py`, `solver.py`)**:
   - `MomentumSectorCatalog`: meet-in-the-middle half-bit enumeration up to 63 orbitals without ever materializing the full $\binom{N_{\text{orb}}}{N_e}$ Fock space.
   - Upper-triangle-only Hermitian sparse CSR assembly (`mode="matrix"`) with branch-free vectorized Jordan–Wigner signs (`parity_sign_u64`).
-  - Zero-loop 6-kernel intermediate-state BLAS-3 `ZGEMM` + `np.bincount` matrix-free operator (`mode="matrixfree"`), cutting peak memory by **4.8x** and beating CSR wall time at $D = 61{,}333$.
+  - Zero-loop 6-kernel intermediate-state BLAS-3 `ZGEMM` + `np.bincount` matrix-free operator (`mode="matrixfree"`), cutting peak memory by **5.1x** at $D = 61{,}333$.
   - `sector_workers` process-pool parallelism (safe for non-reentrant Fortran ARPACK) with atomic checkpoint/resume.
 - **Many-Body Topological & Correlation Diagnostics (`observables.py`)**:
   - Warm-started **1D Resta–Thouless charge pump** (`resta_polarization_matrix`, `thouless_charge_pump_1d`) and **2D FHS many-body Chern number & Wilson pumps** (`many_body_chern_number_and_pump`).
@@ -34,8 +34,8 @@ pip install -e .
 from bandprojected_exactdiagonalization import BandProjectedED, thouless_charge_pump_1d
 from bandprojected_exactdiagonalization.models import ChiralTDBG, TMDContinuum
 
-# 1. Single-valence band tMoTe2 (theta = 4.0 deg, eps = 18.0, 4x6 torus)
-model = TMDContinuum(twist_degrees=4.0, dielectric=18.0, cutoff=6)
+# 1. Single-valence band tMoTe2 (arXiv:2304.11864 default: theta = 3.89 deg, eps = 15.0, 4x6 torus)
+model = TMDContinuum()
 partner, ham, e_full, _ = model.hole_partner_hamiltonian(supercell=(4, 6), qell_cutoff=7.5)
 ed = BandProjectedED(ham, n_particles=8)
 scan = ed.scan_sectors(nev=4, mode="matrix", sector_workers=8)
@@ -64,13 +64,13 @@ Measured on dual-socket EPYC node (`OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1`), 
 
 | System / Torus | Sector Dim $D$ | CSR Time (s) | Matrix-Free Time (s) | CSR Peak RAM (MB) | Matrix-Free Peak RAM (MB) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| $t\mathrm{MoTe}_2$ $3\times 5$, $N_e=5$ | 201 | 0.067 | 0.452 | 0.50 | 0.36 |
-| $t\mathrm{MoTe}_2$ $3\times 6$, $N_e=6$ | 1,032 | 0.149 | 0.921 | 4.14 | 2.25 |
-| $t\mathrm{MoTe}_2$ $4\times 6$, $N_e=8$ | 30,709 | 5.050 | 8.901 | 299.74 | 73.32 |
-| Two-band $p4mm$ $3\times 4$, $N_h=8$ | 61,333 | 13.671 | **10.552** | 1220.39 | **255.71** |
+| $t\mathrm{MoTe}_2$ $3\times 5$, $N_e=5$ | 201 | 0.072 | 0.420 | 0.50 | 0.36 |
+| $t\mathrm{MoTe}_2$ $3\times 6$, $N_e=6$ | 1,032 | 0.136 | 0.788 | 4.14 | 2.21 |
+| $t\mathrm{MoTe}_2$ $4\times 6$, $N_e=8$ | 30,709 | 4.028 | 7.334 | 299.74 | 73.45 |
+| Two-band $p4mm$ $3\times 4$, $N_h=8$ | 61,333 | 10.181 | 10.844 | 1220.39 | **240.91** |
 
-- **Thread scaling on $p4mm$ ($D=61{,}333$)**: single-matvec latency drops from `219.5 ms` (`nt=1`) to `35.1 ms` (`nt=12`) — a **6.25x** speedup without leaving pure NumPy/SciPy.
-- **Process-pool sector scaling on $t\mathrm{MoTe}_2$ $4\times 6$ (8 sectors)**: wall time drops from `23.25s` (`sector_workers=1`) to `7.42s` (`sector_workers=8`).
+- **Thread scaling on $p4mm$ ($D=61{,}333$)**: single-matvec latency drops from `214.8 ms` (`nt=1`) to `34.2 ms` (`nt=12`) — a **6.29x** speedup without leaving pure NumPy/SciPy.
+- **Process-pool sector scaling on $t\mathrm{MoTe}_2$ $4\times 6$ (8 sectors)**: wall time drops from `24.59s` (`sector_workers=1`) to `8.40s` (`sector_workers=8`).
 
 ![Benchmark Scaling](figures/benchmark_scaling.svg)
 
@@ -78,7 +78,7 @@ Measured on dual-socket EPYC node (`OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1`), 
 
 ## Model Validation Gallery
 
-| $t\mathrm{MoTe}_2$ ($\theta=4.0^\circ, \epsilon=18$, $4\times 6$) | $C=0$ icTBG ($4\times 6$, gap $3.031\ \text{meV}$) |
+| $t\mathrm{MoTe}_2$ Evolution ($\theta=3.89^\circ,\epsilon=15 \to \theta=4.0^\circ,\epsilon=18$, $4\times 6$) | $C=0$ icTBG ($4\times 6$, gap $3.031\ \text{meV}$) |
 | :---: | :---: |
 | ![tMoTe2 ED Spectrum](figures/tmote2_ed_spectrum.svg) | ![icTBG ED Spectrum](figures/ictbg_ed_spectrum.svg) |
 

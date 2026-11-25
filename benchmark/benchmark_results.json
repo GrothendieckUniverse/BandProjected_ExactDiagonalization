@@ -1,60 +1,60 @@
 {
   "size_scaling": [
     {
-      "label": "tMoTe2 3x5\n(D=200)",
+      "label": "tMoTe2 3x5\n(D=201)",
       "matrix": {
         "mode": "matrix",
         "dimension": 201,
-        "build_seconds": 0.053974193055182695,
-        "solve_seconds": 0.0666033299639821,
-        "peak_memory_mb": 0.4957847595214844,
-        "ground_energy": 280.658395838844
+        "build_seconds": 0.05445679207332432,
+        "solve_seconds": 0.07208206807263196,
+        "peak_memory_mb": 0.49578857421875,
+        "ground_energy": 312.37709162508116
       },
       "matrixfree": {
         "mode": "matrixfree",
         "dimension": 201,
-        "build_seconds": 0.008817221038043499,
-        "solve_seconds": 0.4520191210322082,
-        "peak_memory_mb": 0.35913944244384766,
-        "ground_energy": 280.65839583884383
+        "build_seconds": 0.010086118942126632,
+        "solve_seconds": 0.4204928199760616,
+        "peak_memory_mb": 0.3588094711303711,
+        "ground_energy": 312.37709162508156
       }
     },
     {
-      "label": "tMoTe2 3x6\n(D=1,031)",
+      "label": "tMoTe2 3x6\n(D=1,032)",
       "matrix": {
         "mode": "matrix",
         "dimension": 1032,
-        "build_seconds": 0.10485383309423923,
-        "solve_seconds": 0.14929486089386046,
-        "peak_memory_mb": 4.144321441650391,
-        "ground_energy": 345.66769567014865
+        "build_seconds": 0.10000064503401518,
+        "solve_seconds": 0.1357351189944893,
+        "peak_memory_mb": 4.142291069030762,
+        "ground_energy": 384.7106869382677
       },
       "matrixfree": {
         "mode": "matrixfree",
         "dimension": 1032,
-        "build_seconds": 0.01838040817528963,
-        "solve_seconds": 0.9210226531140506,
-        "peak_memory_mb": 2.252272605895996,
-        "ground_energy": 345.6676956701486
+        "build_seconds": 0.018624291056767106,
+        "solve_seconds": 0.7875414660666138,
+        "peak_memory_mb": 2.212578773498535,
+        "ground_energy": 384.7106869382681
       }
     },
     {
-      "label": "tMoTe2 4x6\n(D=30,667)",
+      "label": "tMoTe2 4x6\n(D=30,709)",
       "matrix": {
         "mode": "matrix",
         "dimension": 30709,
-        "build_seconds": 0.7877339501865208,
-        "solve_seconds": 5.0497731999494135,
-        "peak_memory_mb": 299.7410821914673,
-        "ground_energy": 464.6763278507089
+        "build_seconds": 0.7039650538936257,
+        "solve_seconds": 4.027693521929905,
+        "peak_memory_mb": 299.74092197418213,
+        "ground_energy": 516.708622558873
       },
       "matrixfree": {
         "mode": "matrixfree",
         "dimension": 30709,
-        "build_seconds": 0.08434008597396314,
-        "solve_seconds": 8.900994803057984,
-        "peak_memory_mb": 73.32131099700928,
-        "ground_energy": 464.6763278507087
+        "build_seconds": 0.08771312586031854,
+        "solve_seconds": 7.333896928932518,
+        "peak_memory_mb": 73.4541425704956,
+        "ground_energy": 516.7086225588731
       }
     },
     {
@@ -62,17 +62,17 @@
       "matrix": {
         "mode": "matrix",
         "dimension": 61333,
-        "build_seconds": 2.419318095082417,
-        "solve_seconds": 13.671486610081047,
-        "peak_memory_mb": 1220.393455505371,
+        "build_seconds": 1.923801781842485,
+        "solve_seconds": 10.18099848786369,
+        "peak_memory_mb": 1220.3933410644531,
         "ground_energy": 22.006346014584338
       },
       "matrixfree": {
         "mode": "matrixfree",
         "dimension": 61333,
-        "build_seconds": 0.08202930795960128,
-        "solve_seconds": 10.551883877022192,
-        "peak_memory_mb": 255.7127342224121,
+        "build_seconds": 0.08345690695568919,
+        "solve_seconds": 10.844487566035241,
+        "peak_memory_mb": 240.91249465942383,
         "ground_energy": 22.00634601458427
       }
     }
@@ -80,27 +80,27 @@
   "thread_scaling": [
     {
       "threads": 1,
-      "matvec_seconds": 0.21945909662172197,
+      "matvec_seconds": 0.21484678159467877,
       "dimension": 61333
     },
     {
       "threads": 2,
-      "matvec_seconds": 0.12531250738538802,
+      "matvec_seconds": 0.11811039699241518,
       "dimension": 61333
     },
     {
       "threads": 4,
-      "matvec_seconds": 0.066896359808743,
+      "matvec_seconds": 0.06492099002934992,
       "dimension": 61333
     },
     {
       "threads": 8,
-      "matvec_seconds": 0.04603798319585621,
+      "matvec_seconds": 0.04541582958772779,
       "dimension": 61333
     },
     {
       "threads": 12,
-      "matvec_seconds": 0.035135971615090966,
+      "matvec_seconds": 0.03415635856799781,
       "dimension": 61333
     }
   ],
@@ -108,26 +108,27 @@
     {
       "sector_workers": 1,
       "n_sectors": 8,
-      "seconds": 23.25490405317396
+      "seconds": 24.59166818112135
     },
     {
       "sector_workers": 2,
       "n_sectors": 8,
-      "seconds": 15.45863505685702
+      "seconds": 14.346416078973562
     },
     {
       "sector_workers": 4,
       "n_sectors": 8,
-      "seconds": 8.85870929993689
+      "seconds": 8.98550796508789
     },
     {
       "sector_workers": 8,
       "n_sectors": 8,
-      "seconds": 7.424468453042209
+      "seconds": 8.399496927158907
     }
   ],
   "spectra_gaps": {
-    "tmote2_eps18": 0.01040761721611716,
+    "tmote2_3p89_eps15": 1.6837327463478005,
+    "tmote2_4p0_eps18": 0.01040761721611716,
     "ctdbg_beta0p1": 3.4806137768894416,
     "ctdbg_beta1p0": 1.5988279967581036,
     "ictbg": 3.03081835426795,

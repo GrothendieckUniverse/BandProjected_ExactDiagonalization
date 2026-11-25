@@ -89,7 +89,7 @@ def _benchmark_thread_scaling() -> list[dict]:
 
 
 def _benchmark_sector_workers() -> list[dict]:
-    model = TMDContinuum(twist_degrees=4.0, dielectric=18.0, cutoff=6)
+    model = TMDContinuum(twist_degrees=3.89, dielectric=15.0, cutoff=6)
     _, ham, _, _ = model.hole_partner_hamiltonian(supercell=(4, 6), qell_cutoff=7.5)
     ed = BandProjectedED(ham, n_particles=8, num_threads=1)
     sectors = [(0, 0), (0, 2), (0, 4), (1, 0), (1, 2), (1, 4), (2, 0), (2, 2)]
@@ -99,6 +99,92 @@ def _benchmark_sector_workers() -> list[dict]:
         ed.scan_sectors(sectors=sectors, nev=3, mode="matrix", sector_workers=nw)
         rows.append({"sector_workers": nw, "n_sectors": len(sectors), "seconds": float(time.perf_counter() - t0)})
     return rows
+
+
+def _plot_tmote2_evolution(scan_ref: dict, scan_edge: dict) -> Path:
+    fig, axes = plt.subplots(1, 2, figsize=(11.4, 4.1), sharey=True, constrained_layout=True)
+    fci_secs = {(0, 0), (0, 2), (0, 4)}
+
+    # Left panel: gapped arXiv:2304.11864 FCI at theta=3.89 deg, eps=15
+    # Right panel: FCI-FL transition at theta=4.0 deg, eps=18 with (2,0) intruder
+    configs = (
+        (
+            axes[0],
+            scan_ref,
+            r"(a) $t\mathrm{MoTe}_2$ ($\theta=3.89^\circ, \epsilon=15$, $\nu_h=-2/3$)",
+            False,
+        ),
+        (
+            axes[1],
+            scan_edge,
+            r"(b) $t\mathrm{MoTe}_2$ ($\theta=4.0^\circ, \epsilon=18$, FCI–FL transition)",
+            True,
+        ),
+    )
+
+    for ax, scan, title, mark_intruder in configs:
+        n1, n2 = scan["shape"]
+        e0 = float(scan["ground_energy"])
+        plotted_fci = False
+        plotted_exc = False
+        plotted_int = False
+        for s in sorted(scan["sectors"].keys()):
+            x = s[0] * n2 + s[1]
+            es = scan["sectors"][s].energies - e0
+            for lvl, e in enumerate(es):
+                if lvl == 0 and s in fci_secs:
+                    lbl = "FCI sectors (0,0), (0,2), (0,4)" if not plotted_fci else None
+                    plotted_fci = True
+                    ax.scatter([x], [e], color="#d95f02", s=50, zorder=5, edgecolors="#222222", linewidths=0.7, label=lbl)
+                elif mark_intruder and lvl == 0 and s == (2, 0):
+                    lbl = "FL intruder (2,0)" if not plotted_int else None
+                    plotted_int = True
+                    ax.scatter([x], [e], color="#e7298a", marker="D", s=54, zorder=6, edgecolors="#222222", linewidths=0.7, label=lbl)
+                else:
+                    lbl = "Excited / competing levels" if not plotted_exc else None
+                    plotted_exc = True
+                    ax.scatter([x], [e], color="#3b6ea5", s=26, alpha=0.85, zorder=3, label=lbl)
+
+        if not mark_intruder:
+            e_top = float(scan["ordered_levels"][2][0] - e0)
+            e_exc = float(scan["ordered_levels"][3][0] - e0)
+            gap = e_exc - e_top
+            ax.axhspan(e_top, e_exc, color="#1b9e77", alpha=0.14, zorder=1)
+            ax.axhline(e_top, color="#1b9e77", linestyle=":", linewidth=1.0, zorder=2)
+            ax.axhline(e_exc, color="#1b9e77", linestyle="--", linewidth=1.0, zorder=2)
+            ax.text(
+                0.97,
+                0.52,
+                rf"$\Delta_{{\mathrm{{FCI}}}} = {gap:.2f}\ \mathrm{{meV}}$" + "\n" + rf"spread $= {e_top:.3f}\ \mathrm{{meV}}$",
+                transform=ax.transAxes,
+                ha="right",
+                va="center",
+                fontsize=9,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#1b9e77", alpha=0.9),
+            )
+        else:
+            e00 = float(scan["sectors"][(0, 0)].energies[0] - e0)
+            e20 = float(scan["sectors"][(2, 0)].energies[0] - e0)
+            ax.annotate(
+                rf"(2,0) $={e20:.3f}$ < (0,0) $={e00:.3f}$",
+                xy=(2 * n2, e20),
+                xytext=(12.2, 0.72),
+                fontsize=8.8,
+                arrowprops=dict(arrowstyle="->", color="#e7298a", lw=1.2),
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#e7298a", alpha=0.9),
+            )
+
+        ax.set_xlabel(r"Total momentum sector index $k_1 N_2 + k_2$")
+        ax.set_title(title)
+        ax.grid(True, alpha=0.25, linewidth=0.6)
+        ax.legend(loc="upper right", fontsize=8.2)
+
+    axes[0].set_ylabel(r"$E - E_0$ (meV)")
+    axes[0].set_ylim(-0.12, 2.85)
+    out = FIGURES / "tmote2_ed_spectrum.svg"
+    fig.savefig(out, format="svg")
+    plt.close(fig)
+    return out
 
 
 def _plot_benchmark_svg(size_rows: list[dict], thread_rows: list[dict], worker_rows: list[dict]) -> Path:
@@ -204,13 +290,13 @@ def main() -> None:
     FIGURES.mkdir(parents=True, exist_ok=True)
     print("=== 1. Solver Mode Benchmarks ===", flush=True)
     size_specs = [
-        ("tMoTe2 3x5\n(D=200)", (3, 5), 5, (0, 0)),
-        ("tMoTe2 3x6\n(D=1,031)", (3, 6), 6, (0, 0)),
-        ("tMoTe2 4x6\n(D=30,667)", (4, 6), 8, (0, 0)),
+        ("tMoTe2 3x5\n(D=201)", (3, 5), 5, (0, 0)),
+        ("tMoTe2 3x6\n(D=1,032)", (3, 6), 6, (0, 0)),
+        ("tMoTe2 4x6\n(D=30,709)", (4, 6), 8, (0, 0)),
     ]
     size_rows = []
     for label, sc, ne, sec in size_specs:
-        m = TMDContinuum(twist_degrees=4.0, dielectric=18.0, cutoff=5)
+        m = TMDContinuum(twist_degrees=3.89, dielectric=15.0, cutoff=5)
         _, h, _, _ = m.hole_partner_hamiltonian(supercell=sc, qell_cutoff=7.0)
         ed_mat = BandProjectedED(h, n_particles=ne, num_threads=12)
         row = {
@@ -238,9 +324,11 @@ def main() -> None:
     _plot_benchmark_svg(size_rows, thread_rows, worker_rows)
 
     print("=== 3. Model Full-Spectrum & Charge-Pump Figures ===", flush=True)
-    _, h_tm, _, _ = TMDContinuum(twist_degrees=4.0, dielectric=18.0, cutoff=6).hole_partner_hamiltonian((4, 6), qell_cutoff=7.5)
-    scan_tm = BandProjectedED(h_tm, 8).scan_sectors(nev=4, mode="matrix", sector_workers=12)
-    plot_ed_spectrum(scan_tm, FIGURES / "tmote2_ed_spectrum.svg", title=r"$t\mathrm{MoTe}_2$ ($\theta=4.0^\circ, \epsilon=18, \nu_h=-2/3$)", energy_unit="meV")
+    _, h_tm_ref, _, _ = TMDContinuum().hole_partner_hamiltonian((4, 6), qell_cutoff=7.5)
+    scan_tm_ref = BandProjectedED(h_tm_ref, 8).scan_sectors(nev=4, mode="matrix", sector_workers=12)
+    _, h_tm_edge, _, _ = TMDContinuum(twist_degrees=4.0, dielectric=18.0, cutoff=6).hole_partner_hamiltonian((4, 6), qell_cutoff=7.5)
+    scan_tm_edge = BandProjectedED(h_tm_edge, 8).scan_sectors(nev=4, mode="matrix", sector_workers=12)
+    _plot_tmote2_evolution(scan_tm_ref, scan_tm_edge)
 
     _, h_c01 = ChiralTDBG(beta=0.1, cutoff=5.0).hamiltonian((4, 6), qell_cutoff=6.0)
     scan_c01 = BandProjectedED(h_c01, 8).scan_sectors(nev=4, mode="matrix", sector_workers=12)
@@ -275,7 +363,8 @@ def main() -> None:
         "thread_scaling": thread_rows,
         "sector_worker_scaling": worker_rows,
         "spectra_gaps": {
-            "tmote2_eps18": float(scan_tm["ordered_levels"][3][0] - scan_tm["ordered_levels"][2][0]),
+            "tmote2_3p89_eps15": float(scan_tm_ref["ordered_levels"][3][0] - scan_tm_ref["ordered_levels"][2][0]),
+            "tmote2_4p0_eps18": float(scan_tm_edge["ordered_levels"][3][0] - scan_tm_edge["ordered_levels"][2][0]),
             "ctdbg_beta0p1": float(scan_c01["ordered_levels"][3][0] - scan_c01["ordered_levels"][2][0]),
             "ctdbg_beta1p0": float(scan_c10["ordered_levels"][3][0] - scan_c10["ordered_levels"][2][0]),
             "ictbg": float(scan_ic["ordered_levels"][3][0] - scan_ic["ordered_levels"][2][0]),

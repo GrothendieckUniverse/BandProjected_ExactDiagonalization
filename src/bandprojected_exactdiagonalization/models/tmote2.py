@@ -14,9 +14,13 @@ from ..lattice import BravaisLattice, TorusGeometry
 
 @dataclass(frozen=True)
 class TMDContinuum:
-    """Single-valley R-stacked tMoTe2 continuum Hamiltonian (energies in meV, lengths in Angstrom)."""
+    """Single-valley R-stacked tMoTe2 continuum Hamiltonian (energies in meV, lengths in Angstrom).
 
-    twist_degrees: float = 4.0
+    Default parameters match Wang et al., Phys. Rev. Lett. 132, 036501 (2024) [arXiv:2304.11864]
+    at twist angle 3.89 deg, dielectric constant 15.0, and dual-gate distance 300.0 A.
+    """
+
+    twist_degrees: float = 3.89
     cutoff: int = 6
     a: float = 3.52
     mass: float = 0.6
@@ -24,7 +28,7 @@ class TMDContinuum:
     phase_degrees: float = -107.7
     tunneling: float = -23.82
     valley: int = 1
-    dielectric: float = 18.0
+    dielectric: float = 15.0
     gate_distance: float = 300.0
 
     def __post_init__(self) -> None:
