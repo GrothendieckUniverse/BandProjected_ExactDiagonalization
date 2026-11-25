@@ -18,8 +18,11 @@ from .observables import (
     occupation_matrix,
     particle_entanglement_spectrum,
     plot_ed_spectrum,
+    resta_polarization_matrix,
     static_structure_factor_sector,
+    thouless_charge_pump_1d,
 )
+from . import models
 
 __all__ = [
     "BravaisLattice",
@@ -45,8 +48,11 @@ __all__ = [
     "static_structure_factor_sector",
     "particle_entanglement_spectrum",
     "many_body_chern_number_and_pump",
+    "resta_polarization_matrix",
+    "thouless_charge_pump_1d",
     "flux_spectral_flow",
     "plot_ed_spectrum",
+    "models",
 ]
 
 

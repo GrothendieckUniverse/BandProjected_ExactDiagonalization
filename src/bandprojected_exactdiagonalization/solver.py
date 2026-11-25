@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import os
@@ -19,6 +19,7 @@ from .basis import (
     SectorBasis,
     make_below_masks,
     make_between_masks,
+    parity_sign_u64,
     popcount_u64,
 )
 from .interaction import BandProjectedHamiltonian
@@ -77,6 +78,32 @@ class SectorResult:
     elapsed_seconds: float
 
 
+_WORKER_STATE: dict[str, Any] = {}
+
+
+def _init_sector_worker(
+    hamiltonian: BandProjectedHamiltonian,
+    n_particles: int,
+    dense_threshold: int,
+    chunk_size: int,
+) -> None:
+    _WORKER_STATE["ed"] = BandProjectedED(
+        hamiltonian,
+        n_particles=n_particles,
+        num_threads=1,
+        dense_threshold=dense_threshold,
+        chunk_size=chunk_size,
+    )
+
+
+def _run_sector_worker(
+    task: tuple[tuple[int, int], int, str, float, np.ndarray | None]
+) -> tuple[tuple[int, int], np.ndarray, np.ndarray, np.ndarray, int, str, float]:
+    sector, nev, mode, tol, v0 = task
+    res = _WORKER_STATE["ed"].solve_sector(sector, nev=nev, mode=mode, tol=tol, v0=v0)
+    return res.sector, res.energies, res.states, res.residuals, res.dimension, res.mode, res.elapsed_seconds
+
+
 class BandProjectedED:
     """High-performance pure-NumPy momentum-space ED solver for projected multi-band models."""
 
@@ -87,6 +114,7 @@ class BandProjectedED:
         num_threads: int | None = None,
         dense_threshold: int = 256,
         chunk_size: int = 16384,
+        catalog: MomentumSectorCatalog | None = None,
     ) -> None:
         self.hamiltonian = hamiltonian
         self.n_particles = int(n_particles)
@@ -96,11 +124,21 @@ class BandProjectedED:
         self.dense_threshold = int(dense_threshold)
         self.chunk_size = int(chunk_size)
 
-        self.catalog = MomentumSectorCatalog(
-            hamiltonian.n_orbitals,
-            hamiltonian.geometry.shape,
-            hamiltonian.orbital_momenta,
-            max_particles=self.n_particles,
+        if catalog is not None and (
+            catalog.n_orbitals != hamiltonian.n_orbitals
+            or catalog.shape != hamiltonian.geometry.shape
+            or not np.array_equal(catalog.orbital_momenta, hamiltonian.orbital_momenta)
+        ):
+            raise ValueError("Provided MomentumSectorCatalog does not match Hamiltonian")
+        self.catalog = (
+            catalog
+            if catalog is not None
+            else MomentumSectorCatalog(
+                hamiltonian.n_orbitals,
+                hamiltonian.geometry.shape,
+                hamiltonian.orbital_momenta,
+                max_particles=self.n_particles,
+            )
         )
         self._between = make_between_masks(hamiltonian.n_orbitals)
         self._below = make_below_masks(hamiltonian.n_orbitals)
@@ -147,14 +185,20 @@ class BandProjectedED:
         masks = basis.masks
         d = len(masks)
         diag = self.sector_diagonal(basis)
-        rows = [np.arange(d, dtype=np.int64)]
-        cols = [np.arange(d, dtype=np.int64)]
-        vals = [diag.astype(np.complex128)]
-        if d == 0 or self.n_particles < 1:
-            return sparse.csr_matrix((d, d), dtype=np.complex128)
+        if d == 0:
+            return sparse.csr_matrix((0, 0), dtype=np.complex128)
+        diag_mat = sparse.diags(diag.astype(np.complex128), format="csr")
+        if self.n_particles < 1:
+            return diag_mat
 
-        # Off-diagonal one-body terms inside each k-block
+        rows: list[np.ndarray] = []
+        cols: list[np.ndarray] = []
+        vals: list[np.ndarray] = []
+
+        # Strict half of off-diagonal one-body terms (i_to < i_from); Hermitian conjugate adds the rest
         for i_to, i_from, t_val in self._one_body_offdiag:
+            if i_to >= i_from:
+                continue
             m_from = np.uint64(1 << i_from)
             m_to = np.uint64(1 << i_to)
             src = np.flatnonzero(((masks & m_from) != 0) & ((masks & m_to) == 0))
@@ -162,12 +206,12 @@ class BandProjectedED:
                 continue
             new_masks = masks[src] ^ (m_from | m_to)
             dst = basis.lookup.find_valid(new_masks)
-            parity = popcount_u64(masks[src] & self._between[i_from, i_to]) & 1
+            sgn = parity_sign_u64(masks[src] & self._between[i_from, i_to])
             rows.append(dst)
             cols.append(src)
-            vals.append(t_val * (1.0 - 2.0 * parity))
+            vals.append(t_val * sgn)
 
-        # Off-diagonal two-body pair terms grouped by P
+        # Strict lower triangle in pair-index space (row_p > col_p) grouped by P; + H^dag completes matrix
         if self.n_particles >= 2:
             def process_block(blk):
                 if len(blk.pairs) == 0:
@@ -177,14 +221,17 @@ class BandProjectedED:
                     np.uint64(1) << blk.pairs[:, 1].astype(np.uint64)
                 )
                 for col_p, (k, ell) in enumerate(blk.pairs):
+                    nz_sub = np.flatnonzero(np.abs(blk.offdiag[col_p + 1 :, col_p]) > threshold)
+                    if len(nz_sub) == 0:
+                        continue
+                    nz_rows = nz_sub + (col_p + 1)
                     k, ell = int(k), int(ell)
                     pm = pair_masks[col_p]
                     src = np.flatnonzero((masks & pm) == pm)
                     if len(src) == 0:
                         continue
                     rem = masks[src] ^ pm
-                    p_rem = popcount_u64(masks[src] & self._between[k, ell]) & 1
-                    nz_rows = np.flatnonzero(np.abs(blk.offdiag[:, col_p]) > threshold)
+                    sgn_rem = parity_sign_u64(masks[src] & self._between[k, ell])
                     for row_p in nz_rows:
                         i, j = int(blk.pairs[row_p, 0]), int(blk.pairs[row_p, 1])
                         cm = pair_masks[row_p]
@@ -194,10 +241,10 @@ class BandProjectedED:
                         rest = rem[allowed]
                         tgt_masks = rest | cm
                         dst = basis.lookup.find_valid(tgt_masks)
-                        parity = p_rem[allowed] ^ (popcount_u64(rest & self._between[i, j]) & 1)
+                        sgn_ij = parity_sign_u64(rest & self._between[i, j])
                         b_rows.append(dst)
                         b_cols.append(src[allowed])
-                        b_vals.append(blk.offdiag[row_p, col_p] * (1.0 - 2.0 * parity))
+                        b_vals.append(blk.offdiag[row_p, col_p] * sgn_rem[allowed] * sgn_ij)
                 if not b_rows:
                     return None
                 return np.concatenate(b_rows), np.concatenate(b_cols), np.concatenate(b_vals)
@@ -214,31 +261,33 @@ class BandProjectedED:
                     cols.append(res[1])
                     vals.append(res[2])
 
-        mat = sparse.coo_matrix(
+        if not rows:
+            return diag_mat
+        half = sparse.coo_matrix(
             (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
             shape=(d, d),
             dtype=np.complex128,
         ).tocsr()
+        mat = half + half.conj().T + diag_mat
         mat.sum_duplicates()
-        defect = mat - mat.conj().T
-        if np.max(np.abs(defect.data), initial=0.0) > 1e-8:
-            raise ArithmeticError("Assembled sector sparse Hamiltonian failed Hermiticity")
         return mat
 
-    def make_matrixfree_operator(self, basis: SectorBasis) -> tuple[LinearOperator, np.ndarray]:
+    def make_matrixfree_operator(
+        self, basis: SectorBasis, pool: ThreadPoolExecutor | None = None
+    ) -> tuple[LinearOperator, np.ndarray]:
         """BLAS-3 intermediate-state ZGEMM matrix-free LinearOperator (memory-bounded).
 
         For each pair-momentum block P, iterates over chunks of the intermediate
         (N_e - 2, K - P) basis, gathers X[r, beta] = s(r, beta) * v[r U beta],
         applies ALL off-diagonal scatterings via a single matrix multiply Y = X @ W_off_P.T,
-        and scatters s(r, alpha) * Y[r, alpha] back into out.
+        and scatters s(r, alpha) * Y[r, alpha] directly (no np.add.at needed since
+        r -> r U alpha is strictly injective at fixed alpha) into out.
         """
         d = len(basis)
         diag = self.sector_diagonal(basis)
         n1, n2 = self.hamiltonian.geometry.shape
         s1, s2 = basis.sector
 
-        # Precompute (inter_basis, pair_masks, active_blocks) only once per sector
         active_blocks = []
         if self.n_particles >= 2:
             for blk in self.hamiltonian.pair_blocks.values():
@@ -253,9 +302,9 @@ class BandProjectedED:
                     np.uint64(1) << blk.pairs[:, 1].astype(np.uint64)
                 )
                 btw = self._between[blk.pairs[:, 0], blk.pairs[:, 1]]
-                active_blocks.append((blk, inter_basis.masks, pmasks, btw))
+                w_off_t = np.ascontiguousarray(blk.offdiag.T)
+                active_blocks.append((inter_basis.masks, pmasks, btw, w_off_t))
 
-        # Precompute one-body off-diagonal maps if nbands > 1
         one_body_maps = []
         for i_to, i_from, t_val in self._one_body_offdiag:
             m_from = np.uint64(1 << i_from)
@@ -264,60 +313,52 @@ class BandProjectedED:
             if len(src) == 0:
                 continue
             dst = basis.lookup.find_valid(basis.masks[src] ^ (m_from | m_to))
-            parity = popcount_u64(basis.masks[src] & self._between[i_from, i_to]) & 1
-            one_body_maps.append((src, dst, t_val * (1.0 - 2.0 * parity)))
+            sgn = parity_sign_u64(basis.masks[src] & self._between[i_from, i_to])
+            one_body_maps.append((src, dst, t_val * sgn))
 
         chunk = self.chunk_size
         n_threads = self.num_threads
 
         def apply_pair_block(item, vec: np.ndarray) -> np.ndarray:
-            blk, r_masks, pmasks, btw = item
+            r_masks, pmasks, btw, w_off_t = item
             out_local = np.zeros(d, dtype=np.complex128)
-            n_p = len(blk.pairs)
-            w_off_t = np.ascontiguousarray(blk.offdiag.T)
+            n_p = len(pmasks)
             n_r = len(r_masks)
             for start in range(0, n_r, chunk):
                 stop = min(start + chunk, n_r)
                 rc = r_masks[start:stop]
                 m = stop - start
+                pos, col = np.nonzero((rc[:, None] & pmasks[None, :]) == 0)
+                if len(pos) == 0:
+                    continue
+                r_sub = rc[pos]
+                idx = basis.lookup.find_valid(r_sub | pmasks[col])
+                sgn = parity_sign_u64(r_sub & btw[col])
                 x_mat = np.zeros((m, n_p), dtype=np.complex128)
-                cached_targets: list[tuple[np.ndarray, np.ndarray, np.ndarray] | None] = [None] * n_p
-                # Gather over all pairs in block P
-                for col in range(n_p):
-                    allowed = (rc & pmasks[col]) == 0
-                    pos = np.flatnonzero(allowed)
-                    if len(pos) == 0:
-                        continue
-                    r_sub = rc[pos]
-                    tgt_masks = r_sub | pmasks[col]
-                    idx = basis.lookup.find_valid(tgt_masks)
-                    sgn = 1.0 - 2.0 * (popcount_u64(r_sub & btw[col]) & 1)
-                    x_mat[pos, col] = sgn * vec[idx]
-                    cached_targets[col] = (pos, idx, sgn)
-                # Single BLAS-3 ZGEMM over all pairs in block P
+                x_mat[pos, col] = sgn * vec[idx]
                 y_mat = x_mat @ w_off_t
-                # Scatter back
-                for row in range(n_p):
-                    item_tgt = cached_targets[row]
-                    if item_tgt is None:
-                        continue
-                    pos, idx, sgn = item_tgt
-                    np.add.at(out_local, idx, sgn * y_mat[pos, row])
+                vals = sgn * y_mat[pos, col]
+                out_local += np.bincount(idx, weights=vals.real, minlength=d) + 1j * np.bincount(
+                    idx, weights=vals.imag, minlength=d
+                )
             return out_local
 
         def matvec(v: np.ndarray) -> np.ndarray:
             vec = np.asarray(v, dtype=np.complex128)
             out = diag * vec
             for src, dst, amp in one_body_maps:
-                np.add.at(out, dst, amp * vec[src])
+                out[dst] += amp * vec[src]
             if not active_blocks:
                 return out
-            if n_threads == 1 or len(active_blocks) <= 1:
+            if pool is not None:
+                for part in pool.map(lambda it: apply_pair_block(it, vec), active_blocks):
+                    out += part
+            elif n_threads == 1 or len(active_blocks) <= 1:
                 for blk_item in active_blocks:
                     out += apply_pair_block(blk_item, vec)
             else:
-                with ThreadPoolExecutor(max_workers=min(n_threads, len(active_blocks))) as pool:
-                    for part in pool.map(lambda it: apply_pair_block(it, vec), active_blocks):
+                with ThreadPoolExecutor(max_workers=min(n_threads, len(active_blocks))) as tmp_pool:
+                    for part in tmp_pool.map(lambda it: apply_pair_block(it, vec), active_blocks):
                         out += part
             return out
 
@@ -360,43 +401,53 @@ class BandProjectedED:
             else:
                 chosen = "matrixfree"
 
-        if chosen == "dense" or k_req >= d - 1:
-            mat = self.assemble_sparse_sector(basis).toarray()
-            evals, evecs = np.linalg.eigh(mat)
-            evals, evecs = evals[:k_req].real, evecs[:, :k_req]
-            mv = lambda x: mat @ x
-        elif chosen == "matrix":
-            mat = self.assemble_sparse_sector(basis)
-            zero = float(mat.diagonal().real.mean())
-            centered = mat - zero * sparse.eye(d, format="csr", dtype=np.complex128)
-            if v0 is None:
-                rng = np.random.default_rng(1337 + s[0] * 1009 + s[1])
-                v0 = rng.normal(size=d) + 1j * rng.normal(size=d)
-            evals, evecs = eigsh(centered, k=k_req, which="SA", tol=tol, v0=v0, maxiter=maxiter)
-            order = np.argsort(evals)
-            evals, evecs = evals[order].real + zero, evecs[:, order]
-            mv = lambda x: mat @ x
-        elif chosen == "matrixfree":
-            op, diag = self.make_matrixfree_operator(basis)
-            zero = float(diag.mean())
-            centered_op = LinearOperator(
-                (d, d), matvec=lambda x: op @ x - zero * x, rmatvec=lambda x: op @ x - zero * x, dtype=np.complex128
-            )
-            if v0 is None:
-                rng = np.random.default_rng(1337 + s[0] * 1009 + s[1])
-                v0 = rng.normal(size=d) + 1j * rng.normal(size=d)
-            evals, evecs = eigsh(centered_op, k=k_req, which="SA", tol=tol, v0=v0, maxiter=maxiter)
-            order = np.argsort(evals)
-            evals, evecs = evals[order].real + zero, evecs[:, order]
-            mv = lambda x: op @ x
-        else:
-            raise ValueError(f"Unknown solver mode {mode!r}; use 'auto', 'dense', 'matrix', or 'matrixfree'")
+        pool: ThreadPoolExecutor | None = None
+        try:
+            if chosen == "dense" or k_req >= d - 1 or d <= 32:
+                mat = self.assemble_sparse_sector(basis).toarray()
+                evals, evecs = np.linalg.eigh(mat)
+                evals, evecs = evals[:k_req].real, evecs[:, :k_req]
+                mv = lambda x: mat @ x
+            elif chosen == "matrix":
+                mat = self.assemble_sparse_sector(basis)
+                zero = float(mat.diagonal().real.mean())
+                centered = mat - zero * sparse.eye(d, format="csr", dtype=np.complex128)
+                if v0 is None:
+                    rng = np.random.default_rng(1337 + s[0] * 1009 + s[1])
+                    v0 = rng.normal(size=d) + 1j * rng.normal(size=d)
+                ncv = min(d - 1, max(24, 2 * k_req + 2))
+                evals, evecs = eigsh(centered, k=k_req, ncv=ncv, which="SA", tol=tol, v0=v0, maxiter=maxiter)
+                order = np.argsort(evals)
+                evals, evecs = evals[order].real + zero, evecs[:, order]
+                mv = lambda x: mat @ x
+            elif chosen == "matrixfree":
+                if self.num_threads > 1:
+                    pool = ThreadPoolExecutor(max_workers=self.num_threads)
+                op, diag = self.make_matrixfree_operator(basis, pool=pool)
+                zero = float(diag.mean())
+                centered_op = LinearOperator(
+                    (d, d), matvec=lambda x: op @ x - zero * x, rmatvec=lambda x: op @ x - zero * x, dtype=np.complex128
+                )
+                if v0 is None:
+                    rng = np.random.default_rng(1337 + s[0] * 1009 + s[1])
+                    v0 = rng.normal(size=d) + 1j * rng.normal(size=d)
+                ncv = min(d - 1, max(24, 2 * k_req + 2))
+                evals, evecs = eigsh(centered_op, k=k_req, ncv=ncv, which="SA", tol=tol, v0=v0, maxiter=maxiter)
+                order = np.argsort(evals)
+                evals, evecs = evals[order].real + zero, evecs[:, order]
+                mv = lambda x: op @ x
+            else:
+                raise ValueError(f"Unknown solver mode {mode!r}; use 'auto', 'dense', 'matrix', or 'matrixfree'")
 
-        evals, evecs = orthonormal_eigenstates(mv, evecs)
-        residuals = np.array(
-            [np.linalg.norm(mv(evecs[:, j]) - evals[j] * evecs[:, j]) for j in range(k_req)],
-            dtype=np.float64,
-        )
+            evals, evecs = orthonormal_eigenstates(mv, evecs)
+            residuals = np.array(
+                [np.linalg.norm(mv(evecs[:, j]) - evals[j] * evecs[:, j]) for j in range(k_req)],
+                dtype=np.float64,
+            )
+        finally:
+            if pool is not None:
+                pool.shutdown(wait=True)
+
         if residuals.max(initial=0.0) > max(1e-7, 1e3 * tol):
             raise ArithmeticError(
                 f"Sector {s} residual {residuals.max():g} exceeded tolerance in mode {chosen}"
@@ -420,8 +471,10 @@ class BandProjectedED:
         tol: float = 1e-10,
         checkpoint_path: str | Path | None = None,
         progress=None,
+        sector_workers: int = 1,
+        v0_by_sector: dict[tuple[int, int], np.ndarray] | None = None,
     ) -> dict[str, Any]:
-        """Solve all or selected momentum sectors with optional atomic checkpoint-resume."""
+        """Solve all or selected momentum sectors with optional checkpointing and process workers."""
         if sectors == "all":
             sector_list = [tuple(map(int, s)) for s in self.hamiltonian.geometry.indices]
         else:
@@ -442,12 +495,8 @@ class BandProjectedED:
                 raise ValueError("Checkpoint fingerprint does not match current Hamiltonian")
             results = saved["results"]
 
-        for s in sector_list:
-            existing = results.get(s)
-            if existing is not None and len(existing.energies) >= min(nev, existing.dimension):
-                continue
-            res = self.solve_sector(s, nev=nev, mode=mode, tol=tol)
-            results[s] = res
+        def _record_result(res: SectorResult) -> None:
+            results[res.sector] = res
             if progress is not None:
                 progress(res)
             if ckpt is not None:
@@ -456,6 +505,44 @@ class BandProjectedED:
                 with tmp.open("wb") as f:
                     pickle.dump({"fingerprint": self.fingerprint, "results": results}, f)
                 tmp.replace(ckpt)
+
+        pending = [
+            s
+            for s in sector_list
+            if not (
+                s in results
+                and len(results[s].energies) >= min(nev, results[s].dimension)
+            )
+        ]
+
+        n_workers = max(1, int(sector_workers))
+        if n_workers > 1 and len(pending) > 1:
+            tasks = [
+                (s, nev, mode, tol, None if v0_by_sector is None else v0_by_sector.get(s))
+                for s in pending
+            ]
+            with ProcessPoolExecutor(
+                max_workers=min(n_workers, len(pending)),
+                initializer=_init_sector_worker,
+                initargs=(self.hamiltonian, self.n_particles, self.dense_threshold, self.chunk_size),
+            ) as proc_pool:
+                for sec, ev, st, rd, dim, md, dt in proc_pool.map(_run_sector_worker, tasks):
+                    res = SectorResult(
+                        sector=sec,
+                        energies=ev,
+                        states=st,
+                        residuals=rd,
+                        dimension=dim,
+                        mode=md,
+                        basis=self.catalog.basis(self.n_particles, sec),
+                        elapsed_seconds=dt,
+                    )
+                    _record_result(res)
+        else:
+            for s in pending:
+                v0 = None if v0_by_sector is None else v0_by_sector.get(s)
+                res = self.solve_sector(s, nev=nev, mode=mode, tol=tol, v0=v0)
+                _record_result(res)
 
         ordered_levels = sorted(
             (float(e), s, lvl)

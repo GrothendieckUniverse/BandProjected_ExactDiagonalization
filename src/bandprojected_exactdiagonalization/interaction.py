@@ -56,16 +56,15 @@ def haldane_pseudopotential_v1(
     v1: float = 1.0,
     include_q0: bool = True,
 ) -> np.ndarray:
-    """LLL Haldane V_1 pseudopotential V(q) = (2*pi*ell^2 / A) * v1 * (1 - q^2 ell^2).
+    """LLL Haldane V_1 pseudopotential V(q) = (4*pi*ell^2 / A) * v1 * (1 - q^2 ell^2).
 
     With ``include_q0=True``, the N-particle Laughlin state at nu=1/3 has exact zero energy
-    in the limit of large q*ell cutoff. Note that L_1(q^2 ell^2) = 1 - q^2 ell^2 gives
-    eigenvalue +v1 in the m=1 relative angular momentum channel and 0 in m != 1.
+    in the limit of large q*ell cutoff, and the two-particle m=1 channel has eigenvalue +v1.
     """
     if ell <= 0.0 or area <= 0.0:
         raise ValueError("Positive ell and area required")
     q2 = np.sum(np.asarray(q_cart, dtype=np.float64) ** 2, axis=-1)
-    val = (2.0 * np.pi * (ell**2) / area) * v1 * (1.0 - q2 * (ell**2))
+    val = (4.0 * np.pi * (ell**2) / area) * v1 * (1.0 - q2 * (ell**2))
     if not include_q0:
         val = np.where(q2 == 0.0, 0.0, val)
     return val

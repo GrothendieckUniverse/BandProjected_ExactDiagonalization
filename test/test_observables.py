@@ -9,7 +9,9 @@ from bandprojected_exactdiagonalization import (
     InternalSpace,
     TorusGeometry,
 )
+from bandprojected_exactdiagonalization.models import haldane_v1_hamiltonian
 from bandprojected_exactdiagonalization.observables import (
+    many_body_chern_number_and_pump,
     occupation_matrix,
     particle_entanglement_spectrum,
     plot_ed_spectrum,
@@ -59,3 +61,13 @@ def test_observables_and_svg(tmp_path):
 
     svg_path = plot_ed_spectrum(scan, tmp_path / "test_spec.svg")
     assert svg_path.is_file() and svg_path.read_text().lstrip().startswith("<")
+
+    # Fast exact filled-band (N_e=4 on 2x2 LLL) many-body Chern check including twist wrap seam
+    topo = many_body_chern_number_and_pump(
+        lambda tw: haldane_v1_hamiltonian(shape=(2, 2), v1=1.0, qell_cutoff=6.0, twists=tw, include_q0=True),
+        n_particles=4,
+        grid_shape=(4, 4),
+        manifold_size=1,
+        nev=1,
+    )
+    assert topo["integer_chern"] == 1

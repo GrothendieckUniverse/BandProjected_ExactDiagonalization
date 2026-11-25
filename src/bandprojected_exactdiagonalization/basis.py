@@ -22,6 +22,14 @@ def popcount_u64(arr: np.ndarray) -> np.ndarray:
     return ((y * np.uint64(0x0101010101010101)) >> np.uint64(56)).astype(np.int64)
 
 
+def parity_sign_u64(arr: np.ndarray) -> np.ndarray:
+    """Fast vectorized fermion sign (-1)^{popcount(arr)} without int64 widening when supported."""
+    x = np.asarray(arr, dtype=np.uint64)
+    if hasattr(np, "bitwise_count"):
+        return np.where((np.bitwise_count(x) & np.uint8(1)) == 0, 1.0, -1.0)
+    return 1.0 - 2.0 * (popcount_u64(x) & 1)
+
+
 def make_between_masks(n_orbitals: int) -> np.ndarray:
     """Bitmasks of bits strictly between ``i`` and ``j`` for branch-free JW parity."""
     masks = np.zeros((n_orbitals, n_orbitals), dtype=np.uint64)
@@ -69,44 +77,16 @@ class SectorLookup:
         n = len(q)
         if n == 0 or self.size == 0:
             return np.full(n, -1, dtype=np.int64)
-        if self.prefix_bits == 0 or self.max_bucket > 32:
-            idx = np.searchsorted(self.masks, q)
-            safe = np.minimum(idx, self.size - 1)
-            hit = (idx < self.size) & (self.masks[safe] == q)
-            return np.where(hit, safe, -1)
-
-        p = (q >> np.uint64(self.shift)).astype(np.int64)
-        lo = self.starts[p]
-        hi = self.starts[p + 1]
-        if self.max_bucket <= 1:
+        if self.prefix_bits > 0 and self.max_bucket <= 1:
+            p = (q >> np.uint64(self.shift)).astype(np.int64)
+            lo = self.starts[p]
+            hi = self.starts[p + 1]
             safe = np.minimum(lo, self.size - 1)
             hit = (lo < hi) & (self.masks[safe] == q)
             return np.where(hit, safe, -1)
-
-        # Vectorized binary search inside tiny [lo, hi) buckets (<= 5 iterations for max_bucket<=32)
-        iters = int(math.ceil(math.log2(self.max_bucket)))
-        for _ in range(iters):
-            mid = (lo + hi) >> 1
-            safe_m = np.minimum(mid, self.size - 1)
-            go_right = (lo < hi) & (self.masks[safe_m] < q)
-            lo = np.where(go_right, mid + 1, lo)
-            hi = np.where((lo < hi) & (~go_right), mid, hi)
-        # Note: after binary search for lower bound, check `lo`!
-        # Wait: standard lower_bound binary search keeps invariant ans in [lo, hi]:
-        return self._find_lower_bound(q, p)
-
-    def _find_lower_bound(self, q: np.ndarray, p: np.ndarray) -> np.ndarray:
-        lo = self.starts[p].copy()
-        hi = self.starts[p + 1].copy()
-        iters = int(math.ceil(math.log2(self.max_bucket + 1)))
-        for _ in range(iters):
-            mid = (lo + hi) >> 1
-            safe_m = np.minimum(mid, self.size - 1)
-            less = (mid < hi) & (self.masks[safe_m] < q)
-            lo = np.where(less, mid + 1, lo)
-            hi = np.where(~less, mid, hi)
-        safe = np.minimum(lo, self.size - 1)
-        hit = (lo < self.starts[p + 1]) & (self.masks[safe] == q)
+        idx = np.searchsorted(self.masks, q)
+        safe = np.minimum(idx, self.size - 1)
+        hit = (idx < self.size) & (self.masks[safe] == q)
         return np.where(hit, safe, -1)
 
     def find_valid(self, queries: np.ndarray) -> np.ndarray:
@@ -114,20 +94,9 @@ class SectorLookup:
         q = np.asarray(queries, dtype=np.uint64)
         if len(q) == 0:
             return np.empty(0, dtype=np.int64)
-        if self.prefix_bits == 0 or self.max_bucket > 32:
-            return np.searchsorted(self.masks, q)
-        p = (q >> np.uint64(self.shift)).astype(np.int64)
-        lo = self.starts[p].copy()
-        if self.max_bucket <= 1:
-            return lo
-        hi = self.starts[p + 1].copy()
-        iters = int(math.ceil(math.log2(self.max_bucket + 1)))
-        for _ in range(iters):
-            mid = (lo + hi) >> 1
-            less = (mid < hi) & (self.masks[np.minimum(mid, self.size - 1)] < q)
-            lo = np.where(less, mid + 1, lo)
-            hi = np.where(~less, mid, hi)
-        return lo
+        if self.prefix_bits > 0 and self.max_bucket <= 1:
+            return self.starts[(q >> np.uint64(self.shift)).astype(np.int64)]
+        return np.searchsorted(self.masks, q)
 
 
 @dataclass

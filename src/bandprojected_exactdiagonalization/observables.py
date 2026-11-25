@@ -223,42 +223,30 @@ def particle_entanglement_spectrum(
     return pes_by_sector
 
 
-def _apply_fock_overlap(
-    u_a: np.ndarray,
-    u_b: np.ndarray,
+def _apply_per_k_blocks(
+    m_blocks: np.ndarray,
     basis_a: SectorBasis,
     basis_b: SectorBasis,
     states_b: np.ndarray,
     perm_k: np.ndarray | None = None,
-    seam_mat: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Compute <Psi_A | Gamma(U_A^dag seam U_B) | Psi_B> on arbitrary multi-band frames.
-
-    Handles both interior links (``perm_k is None``, block-diagonal in k) and boundary
-    wrap links across ``twist -> 0`` (shifting momentum index ``k -> perm_k[k]`` with
-    optional reciprocal seam matrix ``seam_mat`` when wrapping across primitive BZ).
-    """
-    n_k, n_pw, b = u_a.shape
+    """Apply block-diagonal (with optional momentum permutation) single-particle operator to Fock states."""
+    n_k, b, b2 = m_blocks.shape
+    if b != b2:
+        raise ValueError("Square per-momentum operator blocks required")
     v = np.asarray(states_b, dtype=np.complex128)
     vec = v.ndim == 1
     if vec:
         v = v[:, None]
     n_col = v.shape[1]
+    if len(basis_a) == 0 or len(basis_b) == 0:
+        out = np.zeros((len(basis_a), n_col), dtype=np.complex128)
+        return out[:, 0] if vec else out
 
-    # Single-particle overlap blocks per momentum k of source basis_b -> target basis_a
-    # If perm_k is None, dst_k == k. If perm_k is given, src k -> dst_k = perm_k[k].
     if perm_k is None:
-        m_blocks = np.einsum("kpa,kpb->kab", u_a.conj(), u_b)
         cur_masks = basis_b.masks
         cur_vecs = v
     else:
-        # Step 1: apply momentum permutation + fermion permutation parity
-        m_blocks = np.empty((n_k, b, b), dtype=np.complex128)
-        for k_src in range(n_k):
-            k_dst = int(perm_k[k_src])
-            frame_src = u_b[k_src] if seam_mat is None or seam_mat[k_src] is None else seam_mat[k_src] @ u_b[k_src]
-            m_blocks[k_dst] = u_a[k_dst].conj().T @ frame_src
-        # Permute orbital bits (k_src * b + alpha -> perm_k[k_src] * b + alpha)
         perm_orb = (np.repeat(perm_k, b) * b + np.tile(np.arange(b), n_k)).astype(np.int64)
         cur_masks = np.zeros_like(basis_b.masks)
         parity = np.zeros(len(basis_b), dtype=np.int64)
@@ -267,13 +255,12 @@ def _apply_fock_overlap(
             if not np.any(occ):
                 continue
             p_dst = int(perm_orb[o_src])
-            # Count already-placed particles at positions > p_dst
             if p_dst + 1 < basis_b.n_orbitals:
                 parity[occ] += popcount_u64(cur_masks[occ] >> np.uint64(p_dst + 1))
             cur_masks[occ] |= np.uint64(1 << p_dst)
-        cur_vecs = cur_vecs * (1.0 - 2.0 * (parity & 1))[:, None]
+        cur_vecs = v * (1.0 - 2.0 * (parity & 1))[:, None]
 
-    # Fast path for b == 1: strictly diagonal in Fock masks!
+    # Fast path for b == 1: strictly diagonal in Fock masks
     if b == 1:
         scalars = m_blocks[:, 0, 0]
         amp = np.ones(len(cur_masks), dtype=np.complex128)
@@ -281,15 +268,12 @@ def _apply_fock_overlap(
             occ = (cur_masks & np.uint64(1 << k)) != 0
             if np.any(occ):
                 amp[occ] *= scalars[k]
-        # Reorder to match basis_a.masks
         idx = basis_a.lookup.find_valid(cur_masks)
         out = np.zeros((len(basis_a), n_col), dtype=np.complex128)
         out[idx] = amp[:, None] * cur_vecs
         return out[:, 0] if vec else out
 
-    # General multi-band b >= 2: sequential momentum-block action on bitmasks!
-    # At each momentum k, internal orbitals [k*b .. (k+1)*b-1] are contiguous,
-    # so applying M_k preserves total momentum and never crosses other k's!
+    # General multi-band b >= 2: sequential momentum-block action on bitmasks
     masks_cur = cur_masks
     vecs_cur = cur_vecs
     for k in range(n_k):
@@ -300,18 +284,9 @@ def _apply_fock_overlap(
         local_shift = np.uint64(base)
         local_mask = np.uint64(((1 << b) - 1) << base)
         occ_pat = ((masks_cur & local_mask) >> local_shift).astype(np.int64)
-        # Precompute pattern->pattern action of mk inside b orbitals
-        # For each pattern p in 0..(1<<b)-1 with popcount r, act by det of submatrix
         n_pat = 1 << b
-        # Build transition map grouped by input popcount
         pat_bits = [tuple(i for i in range(b) if (p >> i) & 1) for p in range(n_pat)]
         pat_pop = np.array([len(x) for x in pat_bits], dtype=np.int64)
-        # Group states by non-zero local occupation patterns
-        new_dict: dict[int, np.ndarray] = {}
-        # Fast vectorized sweep using base-level Fock basis if b <= 4:
-        # Map each unique state back cleanly
-        order = np.argsort(masks_cur)  # already sorted if no collision?
-        # Even simpler: map (cleared_mask, new_pat) -> accumulate via dictionary or unique!
         cleared = masks_cur & (~local_mask)
         out_masks = []
         out_vecs = []
@@ -334,13 +309,15 @@ def _apply_fock_overlap(
                     continue
                 out_masks.append(cleared[sel] | np.uint64(p_out << base))
                 out_vecs.append(amp * vecs_cur[sel])
+        if not out_masks:
+            out = np.zeros((len(basis_a), n_col), dtype=np.complex128)
+            return out[:, 0] if vec else out
         all_m = np.concatenate(out_masks)
         all_v = np.vstack(out_vecs)
-        # Merge duplicate masks
         s_ord = np.argsort(all_m)
         sm = all_m[s_ord]
         sv = all_v[s_ord]
-        uniq, idx_first, inv = np.unique(sm, return_index=True, return_inverse=True)
+        uniq, inv = np.unique(sm, return_inverse=True)
         merged = np.zeros((len(uniq), n_col), dtype=np.complex128)
         np.add.at(merged, inv, sv)
         masks_cur = uniq
@@ -350,6 +327,37 @@ def _apply_fock_overlap(
     out = np.zeros((len(basis_a), n_col), dtype=np.complex128)
     out[idx_a] = vecs_cur
     return out[:, 0] if vec else out
+
+
+def _apply_fock_overlap(
+    u_a: np.ndarray,
+    u_b: np.ndarray,
+    basis_a: SectorBasis,
+    basis_b: SectorBasis,
+    states_b: np.ndarray,
+    perm_k: np.ndarray | None = None,
+    seam_mat: np.ndarray | None = None,
+) -> np.ndarray:
+    """Compute <Psi_A | Gamma(U_A^dag seam U_B) | Psi_B> on arbitrary multi-band frames.
+
+    Handles both interior links (``perm_k is None``, block-diagonal in k) and boundary
+    wrap links across ``twist -> 0`` (shifting momentum index ``k -> perm_k[k]`` with
+    optional reciprocal seam matrix ``seam_mat`` when wrapping across primitive BZ).
+    """
+    n_k, _, b = u_a.shape
+    if perm_k is None:
+        m_blocks = np.einsum("kpa,kpb->kab", u_a.conj(), u_b)
+    else:
+        m_blocks = np.empty((n_k, b, b), dtype=np.complex128)
+        for k_src in range(n_k):
+            k_dst = int(perm_k[k_src])
+            frame_src = (
+                u_b[k_src]
+                if seam_mat is None or seam_mat[k_src] is None
+                else seam_mat[k_src] @ u_b[k_src]
+            )
+            m_blocks[k_dst] = u_a[k_dst].conj().T @ frame_src
+    return _apply_per_k_blocks(m_blocks, basis_a, basis_b, states_b, perm_k=perm_k)
 
 
 def _single_particle_seam_map(band_a: BlochBand, band_b: BlochBand, axis: int) -> tuple[np.ndarray, list[np.ndarray | None]]:
@@ -371,9 +379,9 @@ def _single_particle_seam_map(band_a: BlochBand, band_b: BlochBand, axis: int) -
         if ti != 0 or tj != 0:
             mat = np.eye(band_a.frames.shape[1], dtype=np.complex128)
             if ti > 0:
-                mat = s0 @ mat
+                mat = s0.conj().T @ mat
             if tj > 0:
-                mat = s1 @ mat
+                mat = s1.conj().T @ mat
             seams[idx_b] = mat
     return perm, seams
 
@@ -387,6 +395,7 @@ def many_body_chern_number_and_pump(
     nev: int = 4,
     mode: str = "auto",
     num_threads: int = 1,
+    sector_workers: int = 1,
 ) -> dict[str, Any]:
     """Compute exact Fukui-Hatsugai-Suzuki many-body Chern number & Wilson charge pumps.
 
@@ -399,16 +408,50 @@ def many_body_chern_number_and_pump(
     multiplet_states: list[list[list[tuple[SectorBasis, np.ndarray]]]] = [[None] * ny for _ in range(nx)]  # type: ignore
     gaps = np.empty((nx, ny), dtype=np.float64)
 
+    shared_catalog: MomentumSectorCatalog | None = None
+    prev_row_v0: dict[tuple[int, int], np.ndarray] | None = None
+    rng_seed = np.random.default_rng(4242)
     for ix in range(nx):
+        prev_v0 = prev_row_v0
         for iy in range(ny):
             tw = (2.0 * np.pi * ix / nx, 2.0 * np.pi * iy / ny)
             band, ham = model_builder(tw)
-            ed = BandProjectedED(ham, n_particles=n_particles, num_threads=num_threads)
-            scan = ed.scan_sectors(sectors=sectors, nev=nev, mode=mode)
+            if shared_catalog is None:
+                shared_catalog = MomentumSectorCatalog(
+                    ham.n_orbitals,
+                    ham.geometry.shape,
+                    ham.orbital_momenta,
+                    max_particles=n_particles,
+                )
+            ed = BandProjectedED(
+                ham,
+                n_particles=n_particles,
+                num_threads=num_threads,
+                catalog=shared_catalog,
+            )
+            scan = ed.scan_sectors(
+                sectors=sectors,
+                nev=nev,
+                mode=mode,
+                sector_workers=sector_workers,
+                v0_by_sector=prev_v0,
+            )
+            prev_v0 = {}
+            for s, res in scan["sectors"].items():
+                if res.dimension > 0 and res.states.shape[1] > 0:
+                    seed = res.states.sum(axis=1)
+                    noise = 0.05 * (rng_seed.normal(size=res.dimension) + 1j * rng_seed.normal(size=res.dimension))
+                    prev_v0[s] = seed + noise / np.sqrt(max(1, res.dimension))
+            if iy == 0:
+                prev_row_v0 = prev_v0
             levels = scan["ordered_levels"]
-            if len(levels) <= manifold_size:
-                raise ValueError("Not enough eigenvalues to measure gap above ground manifold")
-            gaps[ix, iy] = levels[manifold_size][0] - levels[manifold_size - 1][0]
+            if len(levels) < manifold_size:
+                raise ValueError("Not enough eigenvalues to form requested ground manifold")
+            gaps[ix, iy] = (
+                levels[manifold_size][0] - levels[manifold_size - 1][0]
+                if len(levels) > manifold_size
+                else np.inf
+            )
             # Group selected global levels by momentum sector
             by_sec: dict[tuple[int, int], list[int]] = {}
             for _, s, lvl in levels[:manifold_size]:
@@ -449,23 +492,7 @@ def many_body_chern_number_and_pump(
                     off += cols.shape[1]
 
                 shape = b_cur.geometry.shape
-                for (bas_a, cols_a), (ra0, ra1) in zip(st_cur, cur_offsets, strict=True):
-                    for (bas_b, cols_b), (rb0, rb1) in zip(st_nxt, nxt_offsets, strict=True):
-                        # Wait: <Psi_next | Overlap | Psi_cur> so link = U(cur)^dag U(next) => <Psi_cur | Psi_next> = (<Psi_next | Psi_cur>)^dag!
-                        expected_dst = (
-                            ((bas_b.sector[0] + (n_particles if axis == 0 else 0)) % shape[0],
-                             (bas_b.sector[1] + (n_particles if axis == 1 else 0)) % shape[1])
-                            if perm is not None
-                            else bas_b.sector
-                        )
-                        if bas_a.sector != expected_dst:
-                            continue
-                        # Note: _apply_fock_overlap maps bas_b -> bas_a via <bas_a | Gamma(U_a^dag U_b) | bas_b>
-                        applied = _apply_fock_overlap(
-                            b_cur.frames, b_nxt.frames, bas_a, bas_b, cols_b,
-                            perm_k=None if perm is None else _single_particle_seam_map(b_cur, b_nxt, axis)[0] if False else None,
-                        ) if False else None
-                # Clean direct direction: compute L_{b,a} = <Psi_next | O | Psi_cur>, then links = L^dag!
+                # Compute L_{dst, src} = <Psi_next | O | Psi_cur>, then links = L^dag = <Psi_cur | Psi_next>
                 l_mat = np.zeros((manifold_size, manifold_size), dtype=np.complex128)
                 for (bas_dst, cols_dst), (rd0, rd1) in zip(st_nxt, nxt_offsets, strict=True):
                     for (bas_src, cols_src), (rs0, rs1) in zip(st_cur, cur_offsets, strict=True):
@@ -524,6 +551,176 @@ def many_body_chern_number_and_pump(
         "minimum_link_singular_value": min_sv,
         "maximum_plaquette_flux": float(np.max(np.abs(flux))),
         "pumps": pumps,
+        "gaps": gaps,
+    }
+
+
+def resta_polarization_matrix(
+    band: BlochBand,
+    multiplet_states: list[tuple[SectorBasis, np.ndarray]],
+    pump_axis: int = 0,
+) -> np.ndarray:
+    """Resta many-body polarization matrix Z_{alpha,beta} = <Psi_alpha | Gamma(rho_{q0}) | Psi_beta>."""
+    if pump_axis not in (0, 1):
+        raise ValueError("pump_axis must be 0 or 1")
+    if not multiplet_states:
+        raise ValueError("Non-empty multiplet_states required")
+    q0 = np.array([1, 0] if pump_axis == 0 else [0, 1], dtype=np.int64)
+    target_k, _ = band.geometry.shift(q0)
+    ff = band.form_factor(q0)
+    m_blocks = np.empty_like(ff)
+    m_blocks[target_k] = ff
+    q_snf = band.geometry.to_snf_coords(q0)
+    shape = band.geometry.shape
+    n_e = multiplet_states[0][0].n_particles
+
+    offsets: list[tuple[int, int]] = []
+    cols_list: list[np.ndarray] = []
+    off = 0
+    for _, cols in multiplet_states:
+        c = cols[:, None] if cols.ndim == 1 else np.asarray(cols, dtype=np.complex128)
+        offsets.append((off, off + c.shape[1]))
+        cols_list.append(c)
+        off += c.shape[1]
+
+    z_mat = np.zeros((off, off), dtype=np.complex128)
+    for (bas_dst, _), cols_dst, (rd0, rd1) in zip(multiplet_states, cols_list, offsets, strict=True):
+        for (bas_src, _), cols_src, (rs0, rs1) in zip(multiplet_states, cols_list, offsets, strict=True):
+            expected_dst = (
+                (bas_src.sector[0] + n_e * int(q_snf[0])) % shape[0],
+                (bas_src.sector[1] + n_e * int(q_snf[1])) % shape[1],
+            )
+            if bas_dst.sector != expected_dst:
+                continue
+            acted = _apply_per_k_blocks(m_blocks, bas_dst, bas_src, cols_src, perm_k=target_k)
+            z_mat[rd0:rd1, rs0:rs1] = cols_dst.conj().T @ acted
+    return z_mat
+
+
+def thouless_charge_pump_1d(
+    model_builder: Callable[[tuple[float, float]], tuple[BlochBand, BandProjectedHamiltonian]],
+    n_particles: int,
+    n_steps: int = 12,
+    flux_axis: int | str = "auto",
+    manifold_size: int = 3,
+    sectors: Any = "all",
+    nev: int = 4,
+    mode: str = "auto",
+    num_threads: int = 1,
+    sector_workers: int = 1,
+) -> dict[str, Any]:
+    """1D boundary-flux insertion Resta-Thouless many-body charge pump.
+
+    Sweeps phi in [0, 2*pi) along ``flux_axis`` (fixing the transverse twist to 0)
+    and evaluates det(Z_{q0}(phi)) for ``q0 = (1, 0)`` if ``flux_axis == 1`` or
+    ``q0 = (0, 1)`` if ``flux_axis == 0``. When ``N_e % N_{pump} == 0``, the
+    pumped fractional charge equals C_total / manifold_size.
+    """
+    band0, ham0 = model_builder((0.0, 0.0))
+    shape = ham0.geometry.shape
+    if flux_axis == "auto":
+        if n_particles % shape[0] == 0:
+            ax_flux = 1
+        elif n_particles % shape[1] == 0:
+            ax_flux = 0
+        else:
+            ax_flux = 1
+    else:
+        ax_flux = int(flux_axis)
+        if ax_flux not in (0, 1):
+            raise ValueError("flux_axis must be 0, 1, or 'auto'")
+    ax_pump = 1 - ax_flux
+
+    shared_catalog = MomentumSectorCatalog(
+        ham0.n_orbitals,
+        shape,
+        ham0.orbital_momenta,
+        max_particles=n_particles,
+    )
+    steps = int(n_steps)
+    thetas = 2.0 * np.pi * np.arange(steps, dtype=np.float64) / steps
+    dets = np.empty(steps, dtype=np.complex128)
+    gaps = np.empty(steps, dtype=np.float64)
+    flow_by_sector: dict[tuple[int, int], list[np.ndarray]] = {}
+
+    prev_v0: dict[tuple[int, int], np.ndarray] | None = None
+    rng_seed = np.random.default_rng(4242)
+    for j, th in enumerate(thetas):
+        tw = (float(th), 0.0) if ax_flux == 0 else (0.0, float(th))
+        if j == 0:
+            band, ham = band0, ham0
+        else:
+            band, ham = model_builder(tw)
+        ed = BandProjectedED(
+            ham,
+            n_particles=n_particles,
+            num_threads=num_threads,
+            catalog=shared_catalog,
+        )
+        scan = ed.scan_sectors(
+            sectors=sectors,
+            nev=nev,
+            mode=mode,
+            sector_workers=sector_workers,
+            v0_by_sector=prev_v0,
+        )
+        prev_v0 = {}
+        for s, res in scan["sectors"].items():
+            flow_by_sector.setdefault(s, []).append(res.energies)
+            if res.dimension > 0 and res.states.shape[1] > 0:
+                seed = res.states.sum(axis=1)
+                noise = 0.05 * (rng_seed.normal(size=res.dimension) + 1j * rng_seed.normal(size=res.dimension))
+                prev_v0[s] = seed + noise / np.sqrt(max(1, res.dimension))
+
+        levels = scan["ordered_levels"]
+        if len(levels) < manifold_size:
+            raise ValueError("Not enough eigenvalues to form requested ground manifold")
+        gaps[j] = (
+            levels[manifold_size][0] - levels[manifold_size - 1][0]
+            if len(levels) > manifold_size
+            else np.inf
+        )
+        by_sec: dict[tuple[int, int], list[int]] = {}
+        for _, s, lvl in levels[:manifold_size]:
+            by_sec.setdefault(s, []).append(lvl)
+        sel = [
+            (scan["sectors"][s].basis, scan["sectors"][s].states[:, lvls])
+            for s, lvls in sorted(by_sec.items())
+        ]
+        z_mat = resta_polarization_matrix(band, sel, pump_axis=ax_pump)
+        dets[j] = np.linalg.det(z_mat)
+
+    dets_closed = np.append(dets, dets[0])
+    increments = np.angle(np.exp(1j * np.diff(np.angle(dets_closed))))
+    orientation = 1.0 if ax_flux == 1 else -1.0
+    total_chern = float(orientation * np.sum(increments) / (2.0 * np.pi))
+    int_chern = int(np.rint(total_chern))
+    pumped_cycle = np.r_[0.0, np.cumsum(orientation * increments)] / (2.0 * np.pi * manifold_size)
+    max_step = float(np.max(np.abs(increments)))
+    min_det = float(np.min(np.abs(dets)))
+    min_gap = float(gaps.min())
+    resolved = bool(
+        abs(total_chern - int_chern) < 1e-3
+        and max_step < np.pi - 0.1
+        and min_det > 1e-6
+        and min_gap > 1e-8
+    )
+
+    return {
+        "total_chern": total_chern,
+        "integer_chern": int_chern,
+        "averaged_hall_conductivity": float(int_chern / manifold_size),
+        "flux_axis": ax_flux,
+        "pump_axis": ax_pump,
+        "thetas": thetas,
+        "det_Z": dets,
+        "pumped_cycle": pumped_cycle,
+        "increments": increments,
+        "maximum_phase_step": max_step,
+        "minimum_manifold_gap": min_gap,
+        "minimum_abs_det_Z": min_det,
+        "resolved": resolved,
+        "spectral_flow_by_sector": {s: np.asarray(v) for s, v in flow_by_sector.items()},
         "gaps": gaps,
     }
 
